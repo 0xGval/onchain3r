@@ -1,0 +1,31 @@
+chains:
+  base:
+    rpc_url: ${BASE_RPC_URL}
+    explorer_api: "https://api.basescan.org/api"
+    chain_id: 8453
+
+thresholds:
+  top_holder_concentration_warn: 0.30
+  top_holder_concentration_danger: 0.50
+  min_liquidity_usd: 10000
+  min_holders: 50
+  deployer_rug_history_max: 0
+
+llm:
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 4096
+
+dexscreener:
+  base_url: "https://api.dexscreener.com/latest"
+
+brave:
+  base_url: "https://api.search.brave.com/res/v1"
+
+launchpads:
+  base:
+    - address: "0x2112b8456ac07c15fa31ddf3bf713e77716ff3f9"
+      name: "Clanker v4"
+    - address: "0xce5984ce8e98db86fa847cd647b6e853f5105437"
+      name: "Clanker v3"
+    - address: "0xe85a59c628f7d27878aceb4bf3b35733630083a9"
+      name: "Clanker v4.0"
