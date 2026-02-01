@@ -12,6 +12,7 @@ from onchain3r.core.models import (
     DueDiligenceReport,
     RiskCategory,
     RiskLevel,
+    SocialData,
 )
 
 SYSTEM_PROMPT = """\
@@ -63,11 +64,14 @@ class LLMAnalyzer:
         chain: str,
         results: list[CollectorResult],
     ) -> DueDiligenceReport:
-        # Build structured data payload for Claude
+        # Build structured data payload for Claude (trimmed for token efficiency)
         data_payload: dict = {}
         for r in results:
             if r.data is not None:
-                data_payload[r.source] = r.data.model_dump(mode="json")
+                if isinstance(r.data, SocialData):
+                    data_payload[r.source] = _trim_social(r.data)
+                else:
+                    data_payload[r.source] = r.data.model_dump(mode="json")
             else:
                 data_payload[r.source] = {"error": r.error}
 
@@ -110,3 +114,37 @@ class LLMAnalyzer:
             verdict=parsed["verdict"],
             raw_data=data_payload,
         )
+
+
+def _trim_social(data: SocialData) -> dict:
+    """Produce a compact social summary for the LLM — no raw tweet lists."""
+    trimmed: dict = {
+        "twitter_mentions": data.twitter_mentions,
+        "official_account": data.official_account,
+        "follower_count": data.follower_count,
+        "first_ca_poster": data.first_ca_poster,
+        "has_discord": data.has_discord,
+        "has_telegram": data.has_telegram,
+    }
+    if data.ticker_sentiment:
+        trimmed["ticker_sentiment"] = data.ticker_sentiment.model_dump()
+    if data.token_profile:
+        trimmed["token_profile"] = data.token_profile.model_dump()
+    if data.dev_accounts:
+        trimmed["dev_accounts"] = [
+            {"username": d.username, "followers": d.followers, "verified": d.verified}
+            for d in data.dev_accounts
+        ]
+    if data.top_influencers_mentioning:
+        trimmed["top_influencers_mentioning"] = [
+            {"username": i.username, "followers": i.followers}
+            for i in data.top_influencers_mentioning
+        ]
+    # Search summaries (counts only, no tweet text)
+    trimmed["searches"] = [
+        {"query_type": s.query_type, "tweet_count": s.tweet_count}
+        for s in data.searches
+    ]
+    if data.linked_accounts:
+        trimmed["linked_accounts"] = data.linked_accounts[:10]
+    return trimmed

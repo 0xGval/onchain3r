@@ -1,21 +1,18 @@
-"""FastAPI server."""
+"""FastAPI server with WebSocket analysis."""
 
 from __future__ import annotations
 
-import uuid
+import json
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 load_dotenv()
 
 app = FastAPI(title="Onchain3r", version="0.1.0")
-
-# In-memory report store
-_reports: dict[str, dict] = {}
 
 
 def _load_config() -> dict:
@@ -25,46 +22,55 @@ def _load_config() -> dict:
     return {}
 
 
-class AnalyzeRequest(BaseModel):
-    address: str
-    chain: str = "base"
-
-
-class AnalyzeResponse(BaseModel):
-    report_id: str
-    status: str
-
-
-async def _run_analysis(report_id: str, address: str, chain: str) -> None:
-    from onchain3r.core.engine import Engine
-
-    config = _load_config()
-    engine = Engine(config)
+@app.websocket("/ws/analyze")
+async def ws_analyze(ws: WebSocket) -> None:
+    await ws.accept()
     try:
-        report = await engine.analyze(address, chain)
-        _reports[report_id] = {
-            "status": "completed",
-            "report": report.model_dump(mode="json", exclude={"raw_data"}),
-        }
+        msg = json.loads(await ws.receive_text())
+        address = msg.get("address", "")
+        chain = msg.get("chain", "base")
+
+        if not address:
+            await ws.send_json({"type": "error", "message": "Missing address"})
+            await ws.close()
+            return
+
+        from onchain3r.core.engine import Engine
+
+        config = _load_config()
+        engine = Engine(config)
+
+        async def send_progress(text: str) -> None:
+            await ws.send_json({"type": "progress", "message": text})
+
+        engine.on_progress(send_progress)
+
+        try:
+            report = await engine.analyze(address, chain)
+            await ws.send_json({
+                "type": "result",
+                "report": report.model_dump(mode="json"),
+            })
+        except Exception as e:
+            await ws.send_json({"type": "error", "message": str(e)})
+
+    except WebSocketDisconnect:
+        pass
     except Exception as e:
-        _reports[report_id] = {"status": "failed", "error": str(e)}
-
-
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(req: AnalyzeRequest, bg: BackgroundTasks) -> AnalyzeResponse:
-    report_id = str(uuid.uuid4())
-    _reports[report_id] = {"status": "pending"}
-    bg.add_task(_run_analysis, report_id, req.address, req.chain)
-    return AnalyzeResponse(report_id=report_id, status="pending")
-
-
-@app.get("/report/{report_id}")
-async def get_report(report_id: str) -> dict:
-    if report_id not in _reports:
-        raise HTTPException(404, "Report not found")
-    return _reports[report_id]
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
 
 
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+# Serve frontend
+_frontend_dir = Path(__file__).parent.parent / "frontend"
+if _frontend_dir.exists():
+    @app.get("/")
+    async def index():
+        return FileResponse(_frontend_dir / "index.html")

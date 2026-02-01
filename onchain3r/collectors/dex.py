@@ -26,6 +26,17 @@ class DexCollector(BaseCollector):
             )
 
         main = pairs[0]
+        # Extract twitter handle from socials
+        twitter_handle = None
+        for social in (main.get("info") or {}).get("socials", []):
+            if social.get("type") == "twitter":
+                url = social.get("url", "")
+                # Extract handle from https://x.com/handle or https://twitter.com/handle
+                handle = url.rstrip("/").split("/")[-1] if "/" in url else None
+                if handle:
+                    twitter_handle = handle
+                break
+
         dex_data = DexData(
             price_usd=_float(main.get("priceUsd")),
             market_cap=_float(main.get("marketCap")),
@@ -45,6 +56,7 @@ class DexCollector(BaseCollector):
                 for p in pairs[:10]
             ],
             dex_url=main.get("url"),
+            twitter_handle=twitter_handle,
         )
         return CollectorResult(source=self.name, success=True, data=dex_data)
 

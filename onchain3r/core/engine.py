@@ -8,6 +8,8 @@ Runs in two phases:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from onchain3r.analyzer.llm import LLMAnalyzer
 from onchain3r.collectors.base import BaseCollector
@@ -29,41 +31,45 @@ class Engine:
             self.onchain, self.dex, self.social, self.web,
         ]
         self.analyzer = LLMAnalyzer(config)
+        self._progress_cb: Callable[[str], Coroutine[Any, Any, None]] | None = None
+
+    def on_progress(self, cb: Callable[[str], Coroutine[Any, Any, None]]) -> None:
+        self._progress_cb = cb
+
+    async def _emit(self, msg: str) -> None:
+        if self._progress_cb:
+            await self._progress_cb(msg)
 
     async def collect_all(self, address: str, chain: str) -> list[CollectorResult]:
-        # Phase 1: onchain + dex + web in parallel
-        phase1 = await asyncio.gather(
-            self.onchain.safe_collect(address, chain),
+        # Quick pre-fetches: token info (RPC) + DexScreener (for twitter handle)
+        await self._emit("Reading token info...")
+        token_info, dex_prefetch = await asyncio.gather(
+            self.onchain._get_token_info(address),
             self.dex.safe_collect(address, chain),
+        )
+
+        # Extract twitter handle from DexScreener
+        twitter_handle = None
+        if dex_prefetch.success and isinstance(dex_prefetch.data, DexData):
+            twitter_handle = dex_prefetch.data.twitter_handle
+
+        # Build social context
+        context: dict = {
+            "token_name": token_info.name,
+            "token_symbol": token_info.symbol,
+            "twitter_handle": twitter_handle,
+        }
+        self.social.context = context
+
+        # Remaining collectors in parallel (dex already done)
+        await self._emit("Collecting on-chain, social, web data...")
+        onchain_result, social_result, web_result = await asyncio.gather(
+            self.onchain.safe_collect(address, chain),
+            self.social.safe_collect(address, chain),
             self.web.safe_collect(address, chain),
         )
-        onchain_result, dex_result, web_result = phase1
 
-        # Extract context for social collector from onchain + dex fallback
-        context: dict = {}
-        if onchain_result.success and isinstance(onchain_result.data, OnchainData):
-            data = onchain_result.data
-            context["token_name"] = data.token.name
-            context["token_symbol"] = data.token.symbol
-            if data.deployer:
-                context["deployer_address"] = data.deployer.address
-            if data.launchpad and data.launchpad.known:
-                context["launchpad"] = data.launchpad.name
-
-        # Fallback: extract name/symbol from DexScreener if onchain missed them
-        if dex_result.success and isinstance(dex_result.data, DexData):
-            pairs = dex_result.data.pairs
-            if pairs:
-                if not context.get("token_symbol"):
-                    context["token_symbol"] = pairs[0].get("base_token")
-                if not context.get("token_name"):
-                    context["token_name"] = pairs[0].get("base_token")
-
-        # Phase 2: social with context
-        self.social.context = context
-        social_result = await self.social.safe_collect(address, chain)
-
-        return [onchain_result, dex_result, social_result, web_result]
+        return [onchain_result, dex_prefetch, social_result, web_result]
 
     async def close(self) -> None:
         for c in self.collectors:
@@ -83,6 +89,7 @@ class Engine:
     async def analyze(self, address: str, chain: str = "base") -> DueDiligenceReport:
         try:
             results = await self.collect_all(address, chain)
+            await self._emit("Running LLM risk analysis...")
             report = self.analyzer.analyze(address, chain, results)
             return report
         finally:

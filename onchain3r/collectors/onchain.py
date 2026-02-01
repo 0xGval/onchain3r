@@ -49,6 +49,7 @@ class OnchainCollector(BaseCollector):
         super().__init__(config)
         self.api_key = os.getenv("BASESCAN_API_KEY", "")
         self.rpc_url = os.getenv("BASE_RPC_URL", "https://mainnet.base.org")
+        self._token_info_cache: dict[str, TokenInfo] = {}
 
     async def _explorer_get(self, chain: str, **params: str) -> dict:
         params["apikey"] = self.api_key
@@ -58,6 +59,8 @@ class OnchainCollector(BaseCollector):
         return resp.json()
 
     async def _get_token_info(self, address: str) -> TokenInfo:
+        if address in self._token_info_cache:
+            return self._token_info_cache[address]
         from web3 import AsyncWeb3
         from web3.providers import AsyncHTTPProvider
 
@@ -82,10 +85,12 @@ class OnchainCollector(BaseCollector):
         except Exception:
             total_supply = None
 
-        return TokenInfo(
+        info = TokenInfo(
             address=address, chain="base", name=name, symbol=symbol,
             decimals=decimals, total_supply=total_supply,
         )
+        self._token_info_cache[address] = info
+        return info
 
     async def _get_source_code(self, address: str, chain: str) -> tuple[bool, bool, str | None, str | None]:
         data = await self._explorer_get(
@@ -105,17 +110,12 @@ class OnchainCollector(BaseCollector):
         return is_verified, is_proxy, impl, snippet
 
     async def _get_top_holders(self, address: str, chain: str) -> list[HolderInfo]:
-        # Try Etherscan V2 first
-        data = await self._explorer_get(
-            chain, module="token", action="tokenholderlist",
-            contractaddress=address, page="1", offset="20",
-        )
-        result = data.get("result", [])
+        result = []
 
-        # Fallback: Routescan
-        if not result or isinstance(result, str):
-            chain_id = CHAIN_IDS.get(chain, "8453")
-            url = ROUTESCAN_V2.format(chain_id=chain_id)
+        # Routescan first (free, reliable for Base)
+        chain_id = CHAIN_IDS.get(chain, "8453")
+        url = ROUTESCAN_V2.format(chain_id=chain_id)
+        try:
             resp = await self.debug_request(
                 "GET", url,
                 params={"module": "token", "action": "tokenholderlist",
@@ -123,6 +123,16 @@ class OnchainCollector(BaseCollector):
             )
             resp.raise_for_status()
             result = resp.json().get("result", [])
+        except Exception:
+            pass
+
+        # Fallback: Etherscan V2
+        if not result or isinstance(result, str):
+            data = await self._explorer_get(
+                chain, module="token", action="tokenholderlist",
+                contractaddress=address, page="1", offset="20",
+            )
+            result = data.get("result", [])
 
         holders = []
         if not result or isinstance(result, str):
@@ -164,26 +174,28 @@ class OnchainCollector(BaseCollector):
         await _asyncio.gather(*[_label_one(h) for h in holders])
 
     async def _get_contract_creation(self, address: str, chain: str) -> dict | None:
-        """Get contract creation info, with Routescan fallback."""
-        # Try Etherscan V2 first
+        """Get contract creation info. Routescan first (free), Etherscan V2 fallback."""
+        # Routescan first — free and reliable for Base
+        chain_id = CHAIN_IDS.get(chain, "8453")
+        url = ROUTESCAN_V2.format(chain_id=chain_id)
+        try:
+            resp = await self.debug_request(
+                "GET", url,
+                params={"module": "contract", "action": "getcontractcreation",
+                        "contractaddresses": address},
+            )
+            resp.raise_for_status()
+            results = resp.json().get("result", [])
+            if results and not isinstance(results, str) and isinstance(results[0], dict):
+                return results[0]
+        except Exception:
+            pass
+
+        # Fallback: Etherscan V2
         data = await self._explorer_get(
             chain, module="contract", action="getcontractcreation",
             contractaddresses=address,
         )
-        results = data.get("result", [])
-        if results and not isinstance(results, str) and isinstance(results[0], dict):
-            return results[0]
-
-        # Fallback: Routescan (free, supports Base)
-        chain_id = CHAIN_IDS.get(chain, "8453")
-        url = ROUTESCAN_V2.format(chain_id=chain_id)
-        resp = await self.debug_request(
-            "GET", url,
-            params={"module": "contract", "action": "getcontractcreation",
-                    "contractaddresses": address},
-        )
-        resp.raise_for_status()
-        data = resp.json()
         results = data.get("result", [])
         if results and not isinstance(results, str) and isinstance(results[0], dict):
             return results[0]
@@ -211,10 +223,20 @@ class OnchainCollector(BaseCollector):
         return LaunchpadInfo(factory_address=deployer_address, known=False)
 
     async def collect(self, address: str, chain: str) -> CollectorResult:
-        token_info = await self._get_token_info(address)
-        is_verified, is_proxy, impl, snippet = await self._get_source_code(address, chain)
-        top_holders = await self._get_top_holders(address, chain)
-        deployer = await self._get_deployer(address, chain)
+        import asyncio as _asyncio
+
+        # Run all independent calls in parallel
+        token_info_t, source_t, holders_t, deployer_t = await _asyncio.gather(
+            self._get_token_info(address),
+            self._get_source_code(address, chain),
+            self._get_top_holders(address, chain),
+            self._get_deployer(address, chain),
+        )
+
+        token_info = token_info_t
+        is_verified, is_proxy, impl, snippet = source_t
+        top_holders = holders_t
+        deployer = deployer_t
         launchpad = self._match_launchpad(
             deployer.address if deployer else "", chain
         )

@@ -5,10 +5,17 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import sys
+
 import typer
 import yaml
 from dotenv import load_dotenv
 from rich.console import Console
+
+# Fix Windows console encoding for emoji/unicode
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from rich.panel import Panel
 
 load_dotenv()

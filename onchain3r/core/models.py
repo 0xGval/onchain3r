@@ -80,6 +80,7 @@ class DexData(BaseModel):
     price_change_1h: float | None = None
     pairs: list[dict[str, Any]] = Field(default_factory=list)
     dex_url: str | None = None
+    twitter_handle: str | None = None
 
 
 class TweetData(BaseModel):
@@ -111,14 +112,26 @@ class SearchResult(BaseModel):
     tweets: list[TweetData] = Field(default_factory=list)
 
 
+class TickerSentiment(BaseModel):
+    total_tweets: int = 0
+    unique_authors: int = 0
+    total_likes: int = 0
+    total_retweets: int = 0
+    avg_engagement: float = 0.0
+    is_organic: bool = False  # True if >50% authors are unique
+    top_tweet: str | None = None  # highest liked tweet text
+
+
 class SocialData(BaseModel):
     twitter_mentions: int = 0
-    twitter_sentiment: str | None = None
+    ticker_sentiment: TickerSentiment | None = None
     official_account: str | None = None
+    token_profile: TwitterUserInfo | None = None  # from DexScreener handle
     follower_count: int | None = None
     account_age_days: int | None = None
-    engagement_rate: float | None = None
-    sample_tweets: list[str] = Field(default_factory=list)
+    first_ca_poster: str | None = None  # who posted the CA first
+    has_discord: bool = False
+    has_telegram: bool = False
     # Deep analysis fields
     searches: list[SearchResult] = Field(default_factory=list)
     dev_accounts: list[TwitterUserInfo] = Field(default_factory=list)
