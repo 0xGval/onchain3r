@@ -4,6 +4,8 @@ Automated token due diligence engine for EVM chains. Aggregates on-chain, DEX, s
 
 Built for Base. Other EVM chains coming soon.
 
+<img width="1229" height="1284" alt="image" src="https://github.com/user-attachments/assets/126bac6e-b47f-45ac-a982-4eb6e77338b3" />
+
 ---
 
 ## How it works
